@@ -1,0 +1,6 @@
+bin/
+obj/
+.vs/
+*.user
+_to_delete/
+.playwright-mcp/

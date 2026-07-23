@@ -1,0 +1,207 @@
+@page "/"
+@using ClickPrix
+@using ClickPrix.Layout
+@using ClickPrix.Models
+@using ClickPrix.Services
+@inject JolpicaClient Jolpica
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<PageTitle>ClickPrix - Qualifying Gaps by Ear</PageTitle>
+
+<div class="clickprix">
+    <h1>ClickPrix</h1>
+    <p class="tagline">Hear how close qualifying really was. One click per driver, spaced by their real gap.</p>
+
+    @if (loading)
+    {
+        <p><em>Loading latest qualifying results...</em></p>
+    }
+    else if (race is null)
+    {
+        <p class="error">Could not load qualifying results. The API may be down - try refreshing.</p>
+    }
+    else
+    {
+        <h2>@race.RaceName @race.Season - Qualifying</h2>
+
+        <div class="controls">
+            <div class="btn-group" role="group" aria-label="Session">
+                @foreach (var s in new[] { Session.Best, Session.Q1, Session.Q2, Session.Q3 })
+                {
+                    <button class="btn @(session == s ? "btn-primary" : "btn-outline-primary")"
+                            disabled="@isPlaying"
+                            @onclick="() => SelectSession(s)">
+                        @s
+                    </button>
+                }
+            </div>
+
+            <button class="btn btn-lg @(isPlaying ? "btn-danger" : "btn-success") play-btn"
+                    disabled="@(entries.Count == 0)"
+                    @onclick="TogglePlay">
+                @(isPlaying ? "Stop" : "Play clicks")
+            </button>
+        </div>
+
+        @if (entries.Count == 0)
+        {
+            <p><em>No times set in this session.</em></p>
+        }
+        else
+        {
+            <table class="table results">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Driver</th>
+                        <th>Team</th>
+                        <th class="num">Time</th>
+                        <th class="num">Gap</th>
+                        <th class="num">To pole</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (var i = 0; i < entries.Count; i++)
+                    {
+                        var e = entries[i];
+                        <tr id="@RowId(i)">
+                            <td>@(i + 1)</td>
+                            <td><strong>@e.Code</strong> @e.Name</td>
+                            <td>@e.Team</td>
+                            <td class="num">@e.Display</td>
+                            <td class="num">@(i == 0 ? "-" : "+" + (e.Seconds - entries[i - 1].Seconds).ToString("0.000"))</td>
+                            <td class="num">@(i == 0 ? "-" : "+" + (e.Seconds - entries[0].Seconds).ToString("0.000"))</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    }
+</div>
+
+@code {
+    private enum Session { Best, Q1, Q2, Q3 }
+
+    private record Entry(string Code, string Name, string Team, double Seconds, string Display);
+
+    private const double StartDelaySeconds = 1.0;
+
+    private Race? race;
+    private bool loading = true;
+    private bool isPlaying;
+    private Session session = Session.Best;
+    private List<Entry> entries = new();
+
+    private IJSObjectReference? audioModule;
+    private DotNetObjectReference<Home>? selfRef;
+
+    private double TotalSpread => entries.Count < 2 ? 0 : entries[^1].Seconds - entries[0].Seconds;
+
+    private static string RowId(int i) => $"driver-row-{i}";
+
+    protected override async Task OnInitializedAsync()
+    {
+        race = await Jolpica.GetLatestQualifyingAsync();
+        BuildEntries();
+        loading = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            audioModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/audioClicks.js");
+            selfRef = DotNetObjectReference.Create(this);
+        }
+    }
+
+    private void SelectSession(Session s)
+    {
+        session = s;
+        BuildEntries();
+    }
+
+    private void BuildEntries()
+    {
+        entries.Clear();
+        if (race is null) return;
+
+        foreach (var r in race.QualifyingResults)
+        {
+            var (secs, display) = session switch
+            {
+                Session.Q1 => (JolpicaClient.ParseTime(r.Q1), r.Q1),
+                Session.Q2 => (JolpicaClient.ParseTime(r.Q2), r.Q2),
+                Session.Q3 => (JolpicaClient.ParseTime(r.Q3), r.Q3),
+                _ => BestOf(r)
+            };
+
+            if (secs is not null && display is not null)
+            {
+                entries.Add(new Entry(
+                    r.Driver?.Code ?? "???",
+                    $"{r.Driver?.GivenName} {r.Driver?.FamilyName}",
+                    r.Constructor?.Name ?? "",
+                    secs.Value,
+                    display));
+            }
+        }
+
+        entries.Sort((a, b) => a.Seconds.CompareTo(b.Seconds));
+    }
+
+    private static (double?, string?) BestOf(QualifyingResult r)
+    {
+        var best = new[] { r.Q1, r.Q2, r.Q3 }
+            .Select(t => (secs: JolpicaClient.ParseTime(t), text: t))
+            .Where(x => x.secs is not null)
+            .OrderBy(x => x.secs)
+            .FirstOrDefault();
+
+        return (best.secs, best.text);
+    }
+
+    private async Task TogglePlay()
+    {
+        if (audioModule is null || entries.Count == 0) return;
+
+        if (isPlaying)
+        {
+            await audioModule.InvokeVoidAsync("stop");
+            isPlaying = false;
+            return;
+        }
+
+        var pole = entries[0].Seconds;
+        var items = entries
+            .Select((e, i) => new { offset = StartDelaySeconds + (e.Seconds - pole), rowId = RowId(i) })
+            .ToArray();
+
+        isPlaying = true;
+        await audioModule.InvokeVoidAsync("play", items, selfRef);
+    }
+
+    [JSInvokable]
+    public void OnPlaybackFinished()
+    {
+        isPlaying = false;
+        StateHasChanged();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        selfRef?.Dispose();
+        if (audioModule is not null)
+        {
+            try
+            {
+                await audioModule.InvokeVoidAsync("stop");
+                await audioModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+        }
+    }
+}
