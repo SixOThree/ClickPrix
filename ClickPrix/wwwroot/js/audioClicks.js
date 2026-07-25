@@ -19,7 +19,10 @@ const samples = {}; // name -> { buffer, onset, peakAt, load }
 
 function loadSample(name) {
     const s = samples[name] ??= { buffer: null, onset: 0, peakAt: 0, load: null };
-    s.load ??= fetch(SAMPLE_URLS[name])
+    // cache: "no-cache" revalidates with the server (cheap 304 when
+    // unchanged), so a swapped sound file is picked up on the next page
+    // load instead of a heuristically-cached stale copy playing forever.
+    s.load ??= fetch(SAMPLE_URLS[name], { cache: "no-cache" })
         .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`)))
         .then(b => ctx.decodeAudioData(b))
         .then(buf => {
@@ -178,7 +181,9 @@ function popSound(time, index, count) {
     panToMaster(gain, index, count);
 
     src.start(time, onset);
-    src.stop(time + 0.3);
+    // Let the sample play to its actual end (rate-adjusted) so the decay is
+    // never truncated, whatever file is swapped in.
+    src.stop(time + (buffer.duration - onset) / src.playbackRate.value + 0.05);
     activeNodes.push(src);
 }
 

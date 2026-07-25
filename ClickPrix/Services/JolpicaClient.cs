@@ -21,14 +21,18 @@ public class JolpicaClient
     {
         var last = await GetQualifyingAsync("current/last");
         if (last is null)
+        {
             return null;
+        }
 
         // Try the round after the last completed race (post-qualifying, pre-race window)
         if (int.TryParse(last.Round, out var round))
         {
             var next = await GetQualifyingAsync($"{last.Season}/{round + 1}");
             if (next is not null && next.QualifyingResults.Count > 0)
+            {
                 return next;
+            }
         }
 
         return last;
@@ -48,11 +52,38 @@ public class JolpicaClient
         }
     }
 
+    /// <summary>Latest qualifying as the source-agnostic model Home renders.</summary>
+    public async Task<QualiData?> GetLatestQualifyingDataAsync()
+    {
+        var race = await GetLatestQualifyingAsync();
+        if (race is null || race.QualifyingResults.Count == 0)
+        {
+            return null;
+        }
+
+        var drivers = race.QualifyingResults.Select(r =>
+        {
+            var code = r.Driver?.Code;
+            if (string.IsNullOrEmpty(code))
+            {
+                var family = r.Driver?.FamilyName;
+                code = string.IsNullOrEmpty(family) ? "???" : family[..Math.Min(3, family.Length)].ToUpperInvariant();
+            }
+
+            return new QualiDriver(code, r.Constructor?.Name ?? "", null,
+                ParseTime(r.Q1), ParseTime(r.Q2), ParseTime(r.Q3));
+        }).ToList();
+
+        return new QualiData($"{race.RaceName} {race.Season} · Qualifying", drivers);
+    }
+
     /// <summary>Parses an Ergast-style time string ("1:44.361" or "59.876") into seconds.</summary>
     public static double? ParseTime(string? time)
     {
         if (string.IsNullOrWhiteSpace(time))
+        {
             return null;
+        }
 
         var parts = time.Split(':');
         try
