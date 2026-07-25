@@ -236,9 +236,14 @@ h1:focus {
     transition: color 0.15s ease-out, border-color 0.15s ease-out, background-color 0.15s ease-out;
 }
 
-    .cp-mode:hover {
+    .cp-mode:hover:not(:disabled) {
         color: var(--ink);
         border-color: var(--edge);
+    }
+
+    .cp-mode:disabled {
+        opacity: 0.4;
+        cursor: default;
     }
 
     .cp-mode.active {
@@ -544,6 +549,58 @@ h1:focus {
     letter-spacing: 0.14em;
     color: var(--ink-mute);
 }
+
+.cp-footer-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45em;
+    color: var(--ink-mute);
+    text-decoration: none;
+    transition: color 0.15s ease-out;
+}
+
+.cp-github-mark {
+    width: 1.6em;
+    height: 1.6em;
+    flex: none;
+}
+
+    .cp-footer-link:hover {
+        color: var(--red-hover);
+    }
+
+.cp-source {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6em;
+}
+
+.cp-source-btn {
+    font: inherit;
+    letter-spacing: inherit;
+    color: var(--ink-mute);
+    background: transparent;
+    border: 1px solid var(--edge);
+    border-radius: 6px;
+    padding: 0.25em 0.55em;
+    cursor: pointer;
+    transition: color 0.15s ease-out, border-color 0.15s ease-out, background-color 0.15s ease-out;
+}
+
+    .cp-source-btn:hover:not(:disabled) {
+        color: var(--ink);
+    }
+
+    .cp-source-btn.active {
+        color: var(--red-hover);
+        border-color: rgba(255, 68, 79, 0.55);
+        background: rgba(255, 68, 79, 0.10);
+    }
+
+    .cp-source-btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+    }
 
 /* ---- Narrow screens ---- */
 

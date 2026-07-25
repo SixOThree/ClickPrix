@@ -3,6 +3,7 @@
 @using ClickPrix.Models
 @using ClickPrix.Services
 @inject JolpicaClient Jolpica
+@inject OpenF1Client OpenF1
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
@@ -28,6 +29,18 @@
     </section>
 
     <section class="cp-controls">
+        <div class="cp-modes" role="group" aria-label="Session">
+            @foreach (var s in Sessions)
+            {
+                <button class="cp-mode @(session == s ? "active" : null)"
+                        disabled="@(!isLive)"
+                        title="@(isLive ? null : "Session times need live data")"
+                        @onclick="() => SelectSession(s)">
+                    @(s == Session.Best ? "Best" : s.ToString())
+                </button>
+            }
+        </div>
+
         <div class="cp-modes" role="group" aria-label="Chart view">
             <button class="cp-mode @(showMarkers ? "active" : null)" @onclick="() => showMarkers = true">
                 Markers
@@ -61,12 +74,16 @@
         {
             <p class="cp-syncing">SYNCING TIMING DATA&hellip;</p>
         }
+        else if (entries.Count == 0)
+        {
+            <p class="cp-syncing">NO TIMES SET IN THIS SESSION</p>
+        }
         else
         {
             @for (var i = 0; i < entries.Count; i++)
             {
                 var e = entries[i];
-                <div class="cp-row" id="cp-row-@i" style="--team:@ColorOf(e.Team)">
+                <div class="cp-row" id="cp-row-@i" style="--team:@RowColor(e)">
                     <span class="cp-pos">@((i + 1).ToString("00"))</span>
                     <span class="cp-teambar" aria-hidden="true"></span>
                     <span class="cp-driver">
@@ -88,12 +105,28 @@
 
     <footer class="cp-footer">
         <span>SOUND REQUIRED &mdash; TURN IT UP</span>
-        <span>@(isLive ? "LIVE TIMING DATA · JOLPICA F1 API" : "ILLUSTRATIVE TIMING DATA · API UNAVAILABLE")</span>
+        <a class="cp-footer-link" href="https://github.com/SixOThree/ClickPrix" target="_blank" rel="noopener">
+            <svg class="cp-github-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path fill="currentColor" d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.04-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.27-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.46-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z" />
+            </svg>
+            GITHUB &nearr;
+        </a>
+        <span class="cp-source">
+            <span>@(isLive && activeSource is not null ? $"LIVE · {SourceLabel(activeSource.Value)} API" : "ILLUSTRATIVE TIMING DATA")</span>
+            @foreach (var s in Sources)
+            {
+                <button class="cp-source-btn @(source == s ? "active" : null)"
+                        disabled="@loading"
+                        @onclick="() => SelectSource(s)">
+                    @SourceLabel(s)
+                </button>
+            }
+        </span>
     </footer>
 </div>
 
 @code {
-    private sealed record Entry(string Code, string Team, double Gap);
+    private sealed record Entry(string Code, string Team, double Gap, string? Color = null);
 
     // ── Fallback dataset ────────────────────────────────────────────────
     // Used only when the Jolpica API is unreachable or has no results.
@@ -143,16 +176,23 @@
 
     private const string FallbackTeamColor = "#8b95a7";
 
-    // The Jolpica API uses long constructor names; display the short forms.
+    // The APIs use long team names; display the short forms.
     private static readonly Dictionary<string, string> TeamAliases = new()
     {
+        // Jolpica (Ergast) constructor names
         ["RB F1 Team"] = "RB",
         ["Alpine F1 Team"] = "Alpine",
         ["Haas F1 Team"] = "Haas",
         ["Cadillac F1 Team"] = "Cadillac",
+        // OpenF1 team names
+        ["Red Bull Racing"] = "Red Bull",
+        ["Racing Bulls"] = "RB",
     };
 
-    private static string ColorOf(string team) => TeamColors.GetValueOrDefault(team, FallbackTeamColor);
+    // Our livery palette first; a source-provided color for teams the palette
+    // doesn't know; grey as the last resort.
+    private static string RowColor(Entry e) =>
+        e.Color ?? TeamColors.GetValueOrDefault(e.Team, FallbackTeamColor);
 
     // ── Timing geometry ─────────────────────────────────────────────────
     // Playback is always real time: a car's click lands exactly its gap
@@ -164,15 +204,36 @@
     private const double IdleMinPct = 4.0;     // where the slowest car idles pre-launch
     private const double EndMaxPct = 95.0;     // markers coast to here after crossing
 
+    private enum Session { Best, Q1, Q2, Q3 }
+
+    private static readonly Session[] Sessions = { Session.Best, Session.Q1, Session.Q2, Session.Q3 };
+
+    private enum DataSource { OpenF1, Jolpica }
+
+    private static readonly DataSource[] Sources = { DataSource.OpenF1, DataSource.Jolpica };
+
+    private static string SourceLabel(DataSource s) => s == DataSource.OpenF1 ? "OPENF1" : "JOLPICA";
+
     private bool loading = true;
     private bool isLive;
     private bool isPlaying;
     private bool showMarkers = true;
+    private Session session = Session.Best;
+    private DataSource source = DataSource.OpenF1; // fresher after a session; toggle in the footer
+    private DataSource? activeSource;              // which source actually supplied the data
+    private QualiData? data;
+    private readonly Dictionary<DataSource, QualiData> sourceCache = new();
     private string raceTitle = FallbackRaceTitle;
     private List<Entry> entries = new();
 
     private IJSObjectReference? audioModule;
     private DotNetObjectReference<Home>? selfRef;
+
+    // Cache buster for the audio module: the ModuleVersionId is a new GUID on
+    // every build, so each deploy forces browsers to refetch audioClicks.js
+    // instead of serving a stale cached copy with the old sounds.
+    private static readonly string AssetVersion =
+        typeof(Home).Assembly.ManifestModule.ModuleVersionId.ToString("N")[..8];
 
     private double Cross(int i) => LeadInSeconds + entries[i].Gap;
     private double MaxCross => entries.Count == 0 ? LeadInSeconds : Cross(entries.Count - 1);
@@ -183,61 +244,110 @@
 
     protected override async Task OnInitializedAsync()
     {
-        var race = await Jolpica.GetLatestQualifyingAsync();
-        var live = BuildEntries(race);
+        await LoadDataAsync();
+    }
 
-        if (live.Count > 0)
+    private async Task LoadDataAsync()
+    {
+        loading = true;
+
+        data = await FetchAsync(source);
+        activeSource = data is not null ? source : null;
+
+        // If the chosen source has nothing, quietly try the other one before
+        // resorting to the baked-in fallback grid.
+        if (data is null)
         {
-            entries = live;
-            raceTitle = $"{race!.RaceName} {race.Season} · Qualifying";
-            isLive = true;
-        }
-        else
-        {
-            entries = FallbackGrid.ToList();
+            var other = source == DataSource.Jolpica ? DataSource.OpenF1 : DataSource.Jolpica;
+            data = await FetchAsync(other);
+            if (data is not null) activeSource = other;
         }
 
+        isLive = data is not null && data.Drivers.Count > 0;
+        raceTitle = isLive ? data!.Title : FallbackRaceTitle;
+        RebuildEntries();
         loading = false;
     }
 
-    /// <summary>Best lap across Q1-Q3 per driver, sorted, as gaps to pole.</summary>
-    private static List<Entry> BuildEntries(Race? race)
+    private async Task<QualiData?> FetchAsync(DataSource s)
     {
-        if (race is null) return new();
+        if (sourceCache.TryGetValue(s, out var cached)) return cached;
 
-        var timed = new List<(string Code, string Team, double Seconds)>();
-        foreach (var r in race.QualifyingResults)
+        var result = s == DataSource.Jolpica
+            ? await Jolpica.GetLatestQualifyingDataAsync()
+            : await OpenF1.GetLatestQualifyingAsync();
+
+        // Only cache successes so a source that was down gets retried.
+        if (result is not null) sourceCache[s] = result;
+        return result;
+    }
+
+    private void RebuildEntries()
+    {
+        entries = isLive ? BuildEntries(data, session) : FallbackGrid.ToList();
+    }
+
+    private async Task SelectSource(DataSource s)
+    {
+        if (source == s) return;
+        await StopPlaybackAsync();
+        source = s;
+        await LoadDataAsync();
+    }
+
+    private async Task SelectSession(Session s)
+    {
+        await StopPlaybackAsync();
+        session = s;
+        RebuildEntries();
+    }
+
+    private async Task StopPlaybackAsync()
+    {
+        if (isPlaying && audioModule is not null)
         {
-            var best = new[] { r.Q1, r.Q2, r.Q3 }
-                .Select(JolpicaClient.ParseTime)
-                .Where(s => s is not null)
-                .Min();
+            await audioModule.InvokeVoidAsync("stop");
+            isPlaying = false;
+        }
+    }
 
-            if (best is not null)
+    /// <summary>The chosen session's laps per driver, sorted, as gaps to that session's pole.
+    /// Best = each driver's fastest across Q1-Q3; drivers with no time are excluded.</summary>
+    private static List<Entry> BuildEntries(QualiData? data, Session session)
+    {
+        if (data is null) return new();
+
+        var timed = new List<(QualiDriver D, double Seconds)>();
+        foreach (var d in data.Drivers)
+        {
+            var secs = session switch
             {
-                var code = r.Driver?.Code;
-                if (string.IsNullOrEmpty(code))
-                {
-                    var family = r.Driver?.FamilyName;
-                    code = string.IsNullOrEmpty(family) ? "???" : family[..Math.Min(3, family.Length)].ToUpperInvariant();
-                }
-                var team = r.Constructor?.Name ?? "";
-                timed.Add((code, TeamAliases.GetValueOrDefault(team, team), best.Value));
-            }
+                Session.Q1 => d.Q1,
+                Session.Q2 => d.Q2,
+                Session.Q3 => d.Q3,
+                _ => new[] { d.Q1, d.Q2, d.Q3 }.Where(s => s is not null).Min(),
+            };
+
+            if (secs is not null) timed.Add((d, secs.Value));
         }
 
         timed.Sort((a, b) => a.Seconds.CompareTo(b.Seconds));
         if (timed.Count == 0) return new();
 
         var pole = timed[0].Seconds;
-        return timed.Select(t => new Entry(t.Code, t.Team, t.Seconds - pole)).ToList();
+        return timed.Select(t =>
+        {
+            var team = TeamAliases.GetValueOrDefault(t.D.Team, t.D.Team);
+            var color = TeamColors.TryGetValue(team, out var c) ? c : t.D.ApiColor;
+            return new Entry(t.D.Code, team, t.Seconds - pole, color);
+        }).ToList();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
-            audioModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/audioClicks.js");
+            audioModule = await JS.InvokeAsync<IJSObjectReference>("import", $"./js/audioClicks.js?v={AssetVersion}");
             selfRef = DotNetObjectReference.Create(this);
         }
     }
