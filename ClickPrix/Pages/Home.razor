@@ -1,110 +1,226 @@
 @page "/"
-@using ClickPrix
-@using ClickPrix.Layout
+@using System.Globalization
 @using ClickPrix.Models
 @using ClickPrix.Services
 @inject JolpicaClient Jolpica
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
-<PageTitle>ClickPrix - Qualifying Gaps by Ear</PageTitle>
+<PageTitle>ClickPrix — Qualifying Gaps by Ear</PageTitle>
 
-<div class="clickprix">
-    <h1>ClickPrix</h1>
-    <p class="tagline">Hear how close qualifying really was. One click per driver, spaced by their real gap.</p>
+<div class="cp">
+    <header class="cp-header">
+        <div class="cp-brand">
+            <span class="cp-mark" aria-hidden="true"></span>
+            <h1 class="cp-wordmark">CLICK<em>PRIX</em></h1>
+        </div>
+        <span class="cp-caption">QUALIFYING GAPS · BY EAR</span>
+    </header>
 
-    @if (loading)
-    {
-        <p><em>Loading latest qualifying results...</em></p>
-    }
-    else if (race is null)
-    {
-        <p class="error">Could not load qualifying results. The API may be down - try refreshing.</p>
-    }
-    else
-    {
-        <h2>@race.RaceName @race.Season - Qualifying</h2>
+    <section class="cp-hero">
+        <p class="cp-eyebrow">// TIMING TOWER · LIVE</p>
+        <h2 class="cp-headline">How close is Formula&nbsp;1, really?</h2>
+        <p class="cp-lede">
+            Every click you hear is one car crossing the finish line, in real time.
+            The whole field arrives inside a heartbeat &mdash; press play and hear
+            just how close it really is.
+        </p>
+    </section>
 
-        <div class="controls">
-            <div class="btn-group" role="group" aria-label="Session">
-                @foreach (var s in new[] { Session.Best, Session.Q1, Session.Q2, Session.Q3 })
-                {
-                    <button class="btn @(session == s ? "btn-primary" : "btn-outline-primary")"
-                            disabled="@isPlaying"
-                            @onclick="() => SelectSession(s)">
-                        @s
-                    </button>
-                }
-            </div>
-
-            <button class="btn btn-lg @(isPlaying ? "btn-danger" : "btn-success") play-btn"
-                    disabled="@(entries.Count == 0)"
-                    @onclick="TogglePlay">
-                @(isPlaying ? "Stop" : "Play clicks")
+    <section class="cp-controls">
+        <div class="cp-modes" role="group" aria-label="Chart view">
+            <button class="cp-mode @(showMarkers ? "active" : null)" @onclick="() => showMarkers = true">
+                Markers
+            </button>
+            <button class="cp-mode @(!showMarkers ? "active" : null)" @onclick="() => showMarkers = false">
+                Highlight
             </button>
         </div>
 
-        @if (entries.Count == 0)
+        <button class="cp-play @(isPlaying ? "playing" : null)"
+                disabled="@(loading || entries.Count == 0)"
+                @onclick="TogglePlay">
+            @(isPlaying ? "STOP" : "PLAY")
+        </button>
+
+        <div class="cp-readout">
+            <span class="cp-readout-label">LATEST CROSSING</span>
+            <span class="cp-readout-pos" id="cp-readout-pos">P&mdash; · READY</span>
+            <span class="cp-readout-gap" id="cp-readout-gap">+0.000</span>
+            <div class="cp-progress"><div class="cp-progress-fill" id="cp-progress-fill"></div></div>
+        </div>
+    </section>
+
+    <section class="cp-chart @(showMarkers ? null : "no-lanes")">
+        <div class="cp-chart-head">
+            <span>@raceTitle</span>
+            <span>Gap &rarr; line 🏁</span>
+        </div>
+
+        @if (loading)
         {
-            <p><em>No times set in this session.</em></p>
+            <p class="cp-syncing">SYNCING TIMING DATA&hellip;</p>
         }
         else
         {
-            <table class="table results">
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Driver</th>
-                        <th>Team</th>
-                        <th class="num">Time</th>
-                        <th class="num">Gap</th>
-                        <th class="num">To pole</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @for (var i = 0; i < entries.Count; i++)
-                    {
-                        var e = entries[i];
-                        <tr id="@RowId(i)">
-                            <td>@(i + 1)</td>
-                            <td><strong>@e.Code</strong> @e.Name</td>
-                            <td>@e.Team</td>
-                            <td class="num">@e.Display</td>
-                            <td class="num">@(i == 0 ? "-" : "+" + (e.Seconds - entries[i - 1].Seconds).ToString("0.000"))</td>
-                            <td class="num">@(i == 0 ? "-" : "+" + (e.Seconds - entries[0].Seconds).ToString("0.000"))</td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
+            @for (var i = 0; i < entries.Count; i++)
+            {
+                var e = entries[i];
+                <div class="cp-row" id="cp-row-@i" style="--team:@ColorOf(e.Team)">
+                    <span class="cp-pos">@((i + 1).ToString("00"))</span>
+                    <span class="cp-teambar" aria-hidden="true"></span>
+                    <span class="cp-driver">
+                        <span class="cp-code">@e.Code</span>
+                        <span class="cp-teamname">@e.Team</span>
+                    </span>
+                    <span class="cp-lane">
+                        <span class="cp-finish" aria-hidden="true"></span>
+                        <span class="cp-pulse" id="cp-pulse-@i" aria-hidden="true"></span>
+                        <span class="cp-marker" id="cp-marker-@i" style="left:@Pct(IdlePct(i))%"></span>
+                    </span>
+                    <span class="cp-gap @(i == 0 ? "pole" : null)">
+                        @(i == 0 ? "POLE" : "+" + e.Gap.ToString("0.000", CultureInfo.InvariantCulture))
+                    </span>
+                </div>
+            }
         }
-    }
+    </section>
+
+    <footer class="cp-footer">
+        <span>SOUND REQUIRED &mdash; TURN IT UP</span>
+        <span>@(isLive ? "LIVE TIMING DATA · JOLPICA F1 API" : "ILLUSTRATIVE TIMING DATA · API UNAVAILABLE")</span>
+    </footer>
 </div>
 
 @code {
-    private enum Session { Best, Q1, Q2, Q3 }
+    private sealed record Entry(string Code, string Team, double Gap);
 
-    private record Entry(string Code, string Name, string Team, double Seconds, string Display);
+    // ── Fallback dataset ────────────────────────────────────────────────
+    // Used only when the Jolpica API is unreachable or has no results.
+    // Gap is seconds to pole; order = result.
+    private const string FallbackRaceTitle = "Belgian Grand Prix 2026 · Qualifying";
 
-    private const double StartDelaySeconds = 1.0;
+    private static readonly Entry[] FallbackGrid =
+    {
+        new("ANT", "Mercedes", 0.000),
+        new("VER", "Red Bull", 0.317),
+        new("NOR", "McLaren", 0.440),
+        new("RUS", "Mercedes", 0.508),
+        new("LEC", "Ferrari", 0.532),
+        new("HAM", "Ferrari", 0.534),
+        new("PIA", "McLaren", 0.655),
+        new("LIN", "RB F1 Team", 0.782),
+        new("BOR", "Audi", 1.267),
+        new("HAD", "Red Bull", 1.462),
+        new("LAW", "RB F1 Team", 1.759),
+        new("GAS", "Alpine F1 Team", 1.970),
+        new("COL", "Alpine F1 Team", 2.031),
+        new("HUL", "Audi", 2.310),
+        new("SAI", "Williams", 2.416),
+        new("BEA", "Haas F1 Team", 2.418),
+        new("ALB", "Williams", 2.759),
+        new("OCO", "Haas F1 Team", 3.440),
+        new("BOT", "Cadillac F1 Team", 3.462),
+        new("PER", "Cadillac F1 Team", 3.610),
+        new("ALO", "Aston Martin", 5.641),
+        new("STR", "Aston Martin", 5.816),
+    };
 
-    private Race? race;
+    private static readonly Dictionary<string, string> TeamColors = new()
+    {
+        ["Mercedes"] = "#27F4D2",
+        ["Red Bull"] = "#3671C6",
+        ["McLaren"] = "#FF8000",
+        ["Ferrari"] = "#E8002D",
+        ["RB F1 Team"] = "#6692FF",
+        ["Audi"] = "#009B77",
+        ["Alpine F1 Team"] = "#FF87BC",
+        ["Williams"] = "#1CA0E0",
+        ["Haas F1 Team"] = "#B6BABD",
+        ["Cadillac F1 Team"] = "#C9A227",
+        ["Aston Martin"] = "#229971",
+    };
+
+    private const string FallbackTeamColor = "#8b95a7";
+
+    private static string ColorOf(string team) => TeamColors.GetValueOrDefault(team, FallbackTeamColor);
+
+    // ── Timing geometry ─────────────────────────────────────────────────
+    // Playback is always real time: a car's click lands exactly its gap
+    // after pole's. All markers share one velocity, so their spacing on
+    // screen encodes the real gaps.
+    private const double LeadInSeconds = 0.9;  // silence before the pole click
+    private const double TailSeconds = 0.8;    // linger after the last car
+    private const double FinishPct = 86.0;     // finish line position in the lane
+    private const double IdleMinPct = 4.0;     // where the slowest car idles pre-launch
+    private const double EndMaxPct = 95.0;     // markers coast to here after crossing
+
     private bool loading = true;
+    private bool isLive;
     private bool isPlaying;
-    private Session session = Session.Best;
+    private bool showMarkers = true;
+    private string raceTitle = FallbackRaceTitle;
     private List<Entry> entries = new();
 
     private IJSObjectReference? audioModule;
     private DotNetObjectReference<Home>? selfRef;
 
-    private double TotalSpread => entries.Count < 2 ? 0 : entries[^1].Seconds - entries[0].Seconds;
+    private double Cross(int i) => LeadInSeconds + entries[i].Gap;
+    private double MaxCross => entries.Count == 0 ? LeadInSeconds : Cross(entries.Count - 1);
+    private double Velocity => (FinishPct - IdleMinPct) / MaxCross; // %/s, shared by all markers
+    private double IdlePct(int i) => FinishPct - Velocity * Cross(i);
 
-    private static string RowId(int i) => $"driver-row-{i}";
+    private static string Pct(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
 
     protected override async Task OnInitializedAsync()
     {
-        race = await Jolpica.GetLatestQualifyingAsync();
-        BuildEntries();
+        var race = await Jolpica.GetLatestQualifyingAsync();
+        var live = BuildEntries(race);
+
+        if (live.Count > 0)
+        {
+            entries = live;
+            raceTitle = $"{race!.RaceName} {race.Season} · Qualifying";
+            isLive = true;
+        }
+        else
+        {
+            entries = FallbackGrid.ToList();
+        }
+
         loading = false;
+    }
+
+    /// <summary>Best lap across Q1-Q3 per driver, sorted, as gaps to pole.</summary>
+    private static List<Entry> BuildEntries(Race? race)
+    {
+        if (race is null) return new();
+
+        var timed = new List<(string Code, string Team, double Seconds)>();
+        foreach (var r in race.QualifyingResults)
+        {
+            var best = new[] { r.Q1, r.Q2, r.Q3 }
+                .Select(JolpicaClient.ParseTime)
+                .Where(s => s is not null)
+                .Min();
+
+            if (best is not null)
+            {
+                var code = r.Driver?.Code;
+                if (string.IsNullOrEmpty(code))
+                {
+                    var family = r.Driver?.FamilyName;
+                    code = string.IsNullOrEmpty(family) ? "???" : family[..Math.Min(3, family.Length)].ToUpperInvariant();
+                }
+                timed.Add((code, r.Constructor?.Name ?? "", best.Value));
+            }
+        }
+
+        timed.Sort((a, b) => a.Seconds.CompareTo(b.Seconds));
+        if (timed.Count == 0) return new();
+
+        var pole = timed[0].Seconds;
+        return timed.Select(t => new Entry(t.Code, t.Team, t.Seconds - pole)).ToList();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -114,52 +230,6 @@
             audioModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/audioClicks.js");
             selfRef = DotNetObjectReference.Create(this);
         }
-    }
-
-    private void SelectSession(Session s)
-    {
-        session = s;
-        BuildEntries();
-    }
-
-    private void BuildEntries()
-    {
-        entries.Clear();
-        if (race is null) return;
-
-        foreach (var r in race.QualifyingResults)
-        {
-            var (secs, display) = session switch
-            {
-                Session.Q1 => (JolpicaClient.ParseTime(r.Q1), r.Q1),
-                Session.Q2 => (JolpicaClient.ParseTime(r.Q2), r.Q2),
-                Session.Q3 => (JolpicaClient.ParseTime(r.Q3), r.Q3),
-                _ => BestOf(r)
-            };
-
-            if (secs is not null && display is not null)
-            {
-                entries.Add(new Entry(
-                    r.Driver?.Code ?? "???",
-                    $"{r.Driver?.GivenName} {r.Driver?.FamilyName}",
-                    r.Constructor?.Name ?? "",
-                    secs.Value,
-                    display));
-            }
-        }
-
-        entries.Sort((a, b) => a.Seconds.CompareTo(b.Seconds));
-    }
-
-    private static (double?, string?) BestOf(QualifyingResult r)
-    {
-        var best = new[] { r.Q1, r.Q2, r.Q3 }
-            .Select(t => (secs: JolpicaClient.ParseTime(t), text: t))
-            .Where(x => x.secs is not null)
-            .OrderBy(x => x.secs)
-            .FirstOrDefault();
-
-        return (best.secs, best.text);
     }
 
     private async Task TogglePlay()
@@ -173,13 +243,27 @@
             return;
         }
 
-        var pole = entries[0].Seconds;
-        var items = entries
-            .Select((e, i) => new { offset = StartDelaySeconds + (e.Seconds - pole), rowId = RowId(i) })
-            .ToArray();
+        var total = MaxCross + TailSeconds;
+        var v = Velocity;
+
+        var items = entries.Select((e, i) =>
+        {
+            var cross = Cross(i);
+            var idlePct = FinishPct - v * cross;
+            var endPct = Math.Min(EndMaxPct, FinishPct + v * (total - cross));
+            return new
+            {
+                code = e.Code,
+                gap = e.Gap,
+                cross,
+                idlePct,
+                endPct,
+                durMs = (endPct - idlePct) / v * 1000.0,
+            };
+        }).ToArray();
 
         isPlaying = true;
-        await audioModule.InvokeVoidAsync("play", items, selfRef);
+        await audioModule.InvokeVoidAsync("play", items, total, showMarkers, selfRef);
     }
 
     [JSInvokable]
