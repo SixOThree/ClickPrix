@@ -10,20 +10,40 @@ let keepAlive = null;
 let activeNodes = [];
 let timeouts = [];
 let animations = [];
-let vroomBuffer = null;
-let vroomLoad = null;
+// Samples (wwwroot/audio/, Pixabay Content License, no attribution
+// required): the Markers view plays a car pass-by, the Highlight view a
+// punchy pop. Each is fetched and decoded once, lazily, on first use;
+// the synthesized click remains as the fallback if a load fails.
+const SAMPLE_URLS = { vroom: "audio/vroom.mp3", pop: "audio/pop.mp3" };
+const samples = {}; // name -> { buffer, onset, peakAt, load }
 
-// Short car pass-by sample (wwwroot/audio/vroom.mp3, Pixabay Content
-// License, no attribution required). Used by the Markers view; the
-// Highlight view keeps the synthesized tick. Fetched and decoded once,
-// lazily, on the first Markers-view play.
-function loadVroom() {
-    vroomLoad ??= fetch("audio/vroom.mp3")
-        .then(r => r.ok ? r.arrayBuffer() : Promise.reject(r.status))
+function loadSample(name) {
+    const s = samples[name] ??= { buffer: null, onset: 0, peakAt: 0, load: null };
+    s.load ??= fetch(SAMPLE_URLS[name])
+        .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`)))
         .then(b => ctx.decodeAudioData(b))
-        .then(buf => { vroomBuffer = buf; })
-        .catch(() => { vroomBuffer = null; }); // play() falls back to clicks
-    return vroomLoad;
+        .then(buf => {
+            s.buffer = buf;
+            // Find the onset (skip leading silence) and the loudest point.
+            // Pops anchor their onset to the crossing time; pass-bys anchor
+            // their PEAK there - the peak is the instant the car passes.
+            const d = buf.getChannelData(0);
+            let i = 0;
+            while (i < d.length && Math.abs(d[i]) < 0.02) i++;
+            s.onset = i < d.length ? i / buf.sampleRate : 0;
+            let pk = 0, pkIdx = 0;
+            for (let j = 0; j < d.length; j++) {
+                if (Math.abs(d[j]) > pk) { pk = Math.abs(d[j]); pkIdx = j; }
+            }
+            s.peakAt = pkIdx / buf.sampleRate;
+        })
+        .catch(err => {
+            // Transient failures must not stick: clear the cached attempt so
+            // the next play retries instead of falling back to clicks forever.
+            s.load = null;
+            console.warn(`ClickPrix: ${name} sample failed to load, falling back to clicks for this run.`, err);
+        });
+    return s.load;
 }
 
 // Opens the audio output stream and keeps the whole output chain awake.
@@ -43,7 +63,12 @@ async function ensureContext() {
         ctx = new AudioContext({ latencyHint: "interactive" });
         master = ctx.createGain();
         master.gain.value = 0.9;
-        master.connect(ctx.destination);
+        // Compressor keeps the mix clean when many vrooms overlap -
+        // midfield cars arrive tenths apart, so 6-8 voices can be
+        // sounding at once and would clip a bare destination.
+        const compressor = ctx.createDynamicsCompressor();
+        master.connect(compressor);
+        compressor.connect(ctx.destination);
     }
     if (ctx.state === "suspended") {
         await ctx.resume();
@@ -89,50 +114,71 @@ function clickSound(time, index, count) {
     gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
 
     osc.connect(highpass).connect(gain);
-
-    // Pan the grid across the stereo field, P1 left -> last car right.
-    let tail = gain;
-    if (ctx.createStereoPanner && count > 1) {
-        const panner = ctx.createStereoPanner();
-        panner.pan.value = -0.5 + index / (count - 1);
-        tail.connect(panner);
-        tail = panner;
-    }
-    tail.connect(master);
+    panToMaster(gain, index, count);
 
     osc.start(time);
     osc.stop(time + 0.06);
     activeNodes.push(osc);
 }
 
-function vroomSound(time, index, count) {
-    // The sample is ~1.8 s; gate it down to a sub-second pass so cars
-    // arriving tenths apart read as separate crossings, not one long rev.
-    const src = ctx.createBufferSource();
-    src.buffer = vroomBuffer;
-    // Same descending-pitch cue as the clicks, via playback rate.
-    src.playbackRate.value = count > 1 ? 1.15 - 0.3 * (index / (count - 1)) : 1;
-
-    const gain = ctx.createGain();
-    const level = index === 0 ? 0.8 : 0.6; // pole gets a little more energy
-    gain.gain.setValueAtTime(level, time);
-    gain.gain.setValueAtTime(level, time + 0.25);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.7);
-
-    src.connect(gain);
-
-    // Pan the grid across the stereo field, P1 left -> last car right.
-    let tail = gain;
+// Pan the grid across the stereo field, P1 left -> last car right,
+// then into the master bus.
+function panToMaster(node, index, count) {
     if (ctx.createStereoPanner && count > 1) {
         const panner = ctx.createStereoPanner();
         panner.pan.value = -0.5 + index / (count - 1);
-        tail.connect(panner);
-        tail = panner;
+        node.connect(panner);
+        node = panner;
     }
-    tail.connect(master);
+    node.connect(master);
+}
 
-    src.start(time);
-    src.stop(time + 0.75);
+function vroomSound(time, index, count) {
+    // Each pass-by plays out its full length at natural pitch so
+    // consecutive cars mix and overlap like a real field crossing the
+    // line; the stereo pan keeps crossings distinguishable in the blend.
+    // The sample's PEAK is aligned to the crossing time: the car is heard
+    // approaching, and is loudest exactly as its marker hits the line.
+    const { buffer, onset, peakAt } = samples.vroom;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const dur = buffer.duration - onset;
+    const lead = Math.max(0, peakAt - onset);
+    const start = Math.max(ctx.currentTime + 0.01, time - lead);
+
+    const gain = ctx.createGain();
+    const level = index === 0 ? 0.55 : 0.4; // pole gets a little more energy
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.linearRampToValueAtTime(level, start + 0.01);
+    gain.gain.setValueAtTime(level, start + Math.max(0.02, dur - 0.35));
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+
+    src.connect(gain);
+    panToMaster(gain, index, count);
+
+    src.start(start, onset);
+    src.stop(start + dur + 0.05);
+    activeNodes.push(src);
+}
+
+function popSound(time, index, count) {
+    // The pop's transient is ~30 ms with a natural decay, so no envelope
+    // gating is needed - just skip the file's leading silence so the
+    // punch lands exactly on the crossing time.
+    const { buffer, onset } = samples.pop;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    // Same descending-pitch cue as the synth ticks, via playback rate.
+    src.playbackRate.value = count > 1 ? 1.12 - 0.24 * (index / (count - 1)) : 1;
+
+    const gain = ctx.createGain();
+    gain.gain.value = index === 0 ? 0.7 : 0.5; // pole gets a little more energy
+
+    src.connect(gain);
+    panToMaster(gain, index, count);
+
+    src.start(time, onset);
+    src.stop(time + 0.3);
     activeNodes.push(src);
 }
 
@@ -176,8 +222,9 @@ export async function play(items, totalSeconds, useVroom, dotnetRef) {
     // items: [{ code, gap, cross: seconds-from-start, idlePct, endPct, durMs }]
     stop();
     await ensureContext();
-    if (useVroom) await loadVroom();
-    const sound = useVroom && vroomBuffer ? vroomSound : clickSound;
+    const which = useVroom ? "vroom" : "pop";
+    await loadSample(which);
+    const sound = samples[which].buffer ? (useVroom ? vroomSound : popSound) : clickSound;
 
     const headroom = 0.1; // scheduling headroom, mirrored in every visual delay
     const base = ctx.currentTime + headroom;
