@@ -109,19 +109,19 @@
         new("LEC", "Ferrari", 0.532),
         new("HAM", "Ferrari", 0.534),
         new("PIA", "McLaren", 0.655),
-        new("LIN", "RB F1 Team", 0.782),
+        new("LIN", "RB", 0.782),
         new("BOR", "Audi", 1.267),
         new("HAD", "Red Bull", 1.462),
-        new("LAW", "RB F1 Team", 1.759),
-        new("GAS", "Alpine F1 Team", 1.970),
-        new("COL", "Alpine F1 Team", 2.031),
+        new("LAW", "RB", 1.759),
+        new("GAS", "Alpine", 1.970),
+        new("COL", "Alpine", 2.031),
         new("HUL", "Audi", 2.310),
         new("SAI", "Williams", 2.416),
-        new("BEA", "Haas F1 Team", 2.418),
+        new("BEA", "Haas", 2.418),
         new("ALB", "Williams", 2.759),
-        new("OCO", "Haas F1 Team", 3.440),
-        new("BOT", "Cadillac F1 Team", 3.462),
-        new("PER", "Cadillac F1 Team", 3.610),
+        new("OCO", "Haas", 3.440),
+        new("BOT", "Cadillac", 3.462),
+        new("PER", "Cadillac", 3.610),
         new("ALO", "Aston Martin", 5.641),
         new("STR", "Aston Martin", 5.816),
     };
@@ -132,16 +132,25 @@
         ["Red Bull"] = "#3671C6",
         ["McLaren"] = "#FF8000",
         ["Ferrari"] = "#E8002D",
-        ["RB F1 Team"] = "#6692FF",
+        ["RB"] = "#6692FF",
         ["Audi"] = "#009B77",
-        ["Alpine F1 Team"] = "#FF87BC",
+        ["Alpine"] = "#FF87BC",
         ["Williams"] = "#1CA0E0",
-        ["Haas F1 Team"] = "#B6BABD",
-        ["Cadillac F1 Team"] = "#C9A227",
+        ["Haas"] = "#B6BABD",
+        ["Cadillac"] = "#C9A227",
         ["Aston Martin"] = "#229971",
     };
 
     private const string FallbackTeamColor = "#8b95a7";
+
+    // The Jolpica API uses long constructor names; display the short forms.
+    private static readonly Dictionary<string, string> TeamAliases = new()
+    {
+        ["RB F1 Team"] = "RB",
+        ["Alpine F1 Team"] = "Alpine",
+        ["Haas F1 Team"] = "Haas",
+        ["Cadillac F1 Team"] = "Cadillac",
+    };
 
     private static string ColorOf(string team) => TeamColors.GetValueOrDefault(team, FallbackTeamColor);
 
@@ -212,7 +221,8 @@
                     var family = r.Driver?.FamilyName;
                     code = string.IsNullOrEmpty(family) ? "???" : family[..Math.Min(3, family.Length)].ToUpperInvariant();
                 }
-                timed.Add((code, r.Constructor?.Name ?? "", best.Value));
+                var team = r.Constructor?.Name ?? "";
+                timed.Add((code, TeamAliases.GetValueOrDefault(team, team), best.Value));
             }
         }
 
