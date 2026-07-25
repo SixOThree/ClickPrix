@@ -181,7 +181,9 @@ function popSound(time, index, count) {
     panToMaster(gain, index, count);
 
     src.start(time, onset);
-    src.stop(time + 0.3);
+    // Let the sample play to its actual end (rate-adjusted) so the decay is
+    // never truncated, whatever file is swapped in.
+    src.stop(time + (buffer.duration - onset) / src.playbackRate.value + 0.05);
     activeNodes.push(src);
 }
 
