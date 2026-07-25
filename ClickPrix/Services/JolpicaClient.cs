@@ -19,7 +19,7 @@ public class JolpicaClient
     /// </summary>
     public async Task<Race?> GetLatestQualifyingAsync()
     {
-        var last = await GetQualifyingAsync("current");
+        var last = await GetQualifyingAsync("current/last");
         if (last is null)
         {
             return null;
