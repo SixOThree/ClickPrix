@@ -24,54 +24,47 @@ public class OpenF1Client
     public OpenF1Client(HttpClient http) => _http = http;
 
     /// <summary>Most recent qualifying session that already has published results.</summary>
-    public async Task<QualiData?> GetLatestQualifyingAsync()
+    public async Task<QualiData?> GetLatestQualifyingAsync(CancellationToken cancellationToken = default)
     {
-        try
+        var year = DateTimeOffset.UtcNow.Year;
+        var candidates = await GetCompletedSessionsAsync(year, cancellationToken);
+        if (candidates.Count == 0)
         {
-            var year = DateTimeOffset.UtcNow.Year;
-            var candidates = await GetCompletedSessionsAsync(year);
-            if (candidates.Count == 0)
-            {
-                candidates = await GetCompletedSessionsAsync(year - 1); // early season
-            }
-
-            // The newest completed session may not have results published yet
-            // (or was rained into oblivion) - step back a couple if needed.
-            foreach (var session in candidates.Take(3))
-            {
-                var data = await BuildFromSessionAsync(session);
-                if (data is not null)
-                {
-                    return data;
-                }
-            }
-
-            return null;
+            candidates = await GetCompletedSessionsAsync(year - 1, cancellationToken); // early season
         }
-        catch
+
+        // The newest completed session may not have results published yet
+        // (or was rained into oblivion) - step back a couple if needed.
+        foreach (var session in candidates.Take(3))
         {
-            return null;
+            var data = await BuildFromSessionAsync(session, cancellationToken);
+            if (data is not null)
+            {
+                return data;
+            }
         }
+
+        return null;
     }
 
-    private async Task<List<OpenF1Session>> GetCompletedSessionsAsync(int year)
+    private async Task<List<OpenF1Session>> GetCompletedSessionsAsync(int year, CancellationToken cancellationToken)
     {
-        var sessions = await Get<List<OpenF1Session>>($"sessions?session_name=Qualifying&year={year}") ?? new();
+        var sessions = await Get<List<OpenF1Session>>($"sessions?session_name=Qualifying&year={year}", cancellationToken) ?? new();
         return sessions
             .Where(s => !s.IsCancelled && s.DateStart <= DateTimeOffset.UtcNow)
             .OrderByDescending(s => s.DateStart)
             .ToList();
     }
 
-    private async Task<QualiData?> BuildFromSessionAsync(OpenF1Session session)
+    private async Task<QualiData?> BuildFromSessionAsync(OpenF1Session session, CancellationToken cancellationToken)
     {
-        var results = await Get<List<OpenF1Result>>($"session_result?session_key={session.SessionKey}");
+        var results = await Get<List<OpenF1Result>>($"session_result?session_key={session.SessionKey}", cancellationToken);
         if (results is null || results.Count == 0)
         {
             return null;
         }
 
-        var drivers = await Get<List<OpenF1Driver>>($"drivers?session_key={session.SessionKey}") ?? new();
+        var drivers = await Get<List<OpenF1Driver>>($"drivers?session_key={session.SessionKey}", cancellationToken) ?? new();
         var byNumber = drivers
             .GroupBy(d => d.DriverNumber)
             .ToDictionary(g => g.Key, g => g.First());
@@ -84,7 +77,7 @@ public class OpenF1Client
             entries.Add(new QualiDriver(
                 d?.NameAcronym ?? $"#{r.DriverNumber}",
                 d?.TeamName ?? "",
-                string.IsNullOrEmpty(d?.TeamColour) ? null : "#" + d!.TeamColour,
+                d?.TeamColour is { Length: > 0 } colour ? "#" + colour : null,
                 q.ElementAtOrDefault(0),
                 q.ElementAtOrDefault(1),
                 q.ElementAtOrDefault(2)));
@@ -95,7 +88,7 @@ public class OpenF1Client
             return null;
         }
 
-        var meeting = (await Get<List<OpenF1Meeting>>($"meetings?meeting_key={session.MeetingKey}"))?.FirstOrDefault();
+        var meeting = (await Get<List<OpenF1Meeting>>($"meetings?meeting_key={session.MeetingKey}", cancellationToken))?.FirstOrDefault();
         var title = meeting?.MeetingName is { Length: > 0 } name
             ? $"{name} {(meeting.Year > 0 ? meeting.Year : session.DateStart.Year)} · Qualifying"
             : $"Qualifying · {session.DateStart:yyyy-MM-dd}";
@@ -103,13 +96,17 @@ public class OpenF1Client
         return new QualiData(title, entries);
     }
 
-    private async Task<T?> Get<T>(string path) where T : class
+    private async Task<T?> Get<T>(string path, CancellationToken cancellationToken) where T : class
     {
         try
         {
-            return await _http.GetFromJsonAsync<T>($"{BaseUrl}/{path}", JsonOpts);
+            return await _http.GetFromJsonAsync<T>($"{BaseUrl}/{path}", JsonOpts, cancellationToken);
         }
-        catch
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw; // real cancellation propagates; HTTP timeouts fall through below
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
         {
             return null;
         }

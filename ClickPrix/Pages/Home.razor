@@ -129,7 +129,7 @@
     private sealed record Entry(string Code, string Team, double Gap, string? Color = null);
 
     // ── Fallback dataset ────────────────────────────────────────────────
-    // Used only when the Jolpica API is unreachable or has no results.
+    // Used only when neither API source has results.
     // Gap is seconds to pole; order = result.
     private const string FallbackRaceTitle = "Belgian Grand Prix 2026 · Qualifying";
 
@@ -228,6 +228,7 @@
 
     private IJSObjectReference? audioModule;
     private DotNetObjectReference<Home>? selfRef;
+    private CancellationTokenSource? loadCts;
 
     // Cache buster for the audio module: the ModuleVersionId is a new GUID on
     // every build, so each deploy forces browsers to refetch audioClicks.js
@@ -249,18 +250,32 @@
 
     private async Task LoadDataAsync()
     {
+        // Supersede any load still in flight (e.g. rapid source switching)
+        // so a slow, stale response can never overwrite newer state.
+        loadCts?.Cancel();
+        loadCts?.Dispose();
+        loadCts = new CancellationTokenSource();
+        var ct = loadCts.Token;
+
         loading = true;
 
-        data = await FetchAsync(source);
-        activeSource = data is not null ? source : null;
-
-        // If the chosen source has nothing, quietly try the other one before
-        // resorting to the baked-in fallback grid.
-        if (data is null)
+        try
         {
-            var other = source == DataSource.Jolpica ? DataSource.OpenF1 : DataSource.Jolpica;
-            data = await FetchAsync(other);
-            if (data is not null) activeSource = other;
+            data = await FetchAsync(source, ct);
+            activeSource = data is not null ? source : null;
+
+            // If the chosen source has nothing, quietly try the other one
+            // before resorting to the baked-in fallback grid.
+            if (data is null)
+            {
+                var other = source == DataSource.Jolpica ? DataSource.OpenF1 : DataSource.Jolpica;
+                data = await FetchAsync(other, ct);
+                if (data is not null) activeSource = other;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return; // a newer load or disposal took over
         }
 
         isLive = data is not null && data.Drivers.Count > 0;
@@ -269,13 +284,13 @@
         loading = false;
     }
 
-    private async Task<QualiData?> FetchAsync(DataSource s)
+    private async Task<QualiData?> FetchAsync(DataSource s, CancellationToken ct)
     {
         if (sourceCache.TryGetValue(s, out var cached)) return cached;
 
         var result = s == DataSource.Jolpica
-            ? await Jolpica.GetLatestQualifyingDataAsync()
-            : await OpenF1.GetLatestQualifyingAsync();
+            ? await Jolpica.GetLatestQualifyingDataAsync(ct)
+            : await OpenF1.GetLatestQualifyingAsync(ct);
 
         // Only cache successes so a source that was down gets retried.
         if (result is not null) sourceCache[s] = result;
@@ -297,6 +312,7 @@
 
     private async Task SelectSession(Session s)
     {
+        if (session == s) return;
         await StopPlaybackAsync();
         session = s;
         RebuildEntries();
@@ -395,6 +411,8 @@
 
     public async ValueTask DisposeAsync()
     {
+        loadCts?.Cancel();
+        loadCts?.Dispose();
         selfRef?.Dispose();
         if (audioModule is not null)
         {
